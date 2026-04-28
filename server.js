@@ -1,81 +1,125 @@
-// ===== IMPORT =====
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// ===== TEST =====
-app.get('/', (req, res) => {
-  res.send('SERVER OK');
-});
+const SECRET = "SIREX_SECRET";
 
-// ===== DATA =====
+// dữ liệu tạm
+let users = [];
 let orders = [];
 let qrCount = 1;
 
-// ===== TẠO ĐƠN =====
-app.post('/create-order', (req, res) => {
-  const { user, amount } = req.body;
+// tạo admin mặc định
+(async ()=>{
+  let hash = await bcrypt.hash('MinhKhiem&08',10);
+  users.push({
+    username:'admin',
+    password:hash,
+    role:'admin'
+  });
+})();
 
-  if (!user || !amount) {
-    return res.json({ error: 'Thiếu user hoặc amount' });
+// ===== ĐĂNG KÝ =====
+app.post('/register', async (req,res)=>{
+  let {username,password} = req.body;
+
+  if(users.find(u=>u.username===username)){
+    return res.json({error:'Tồn tại'});
   }
 
-  const code = 'NKCSIREX' + String(qrCount).padStart(4, '0');
-  qrCount++;
+  let hash = await bcrypt.hash(password,10);
 
-  const order = {
-    id: 'DH' + Date.now(),
-    user,
-    amount,
+  users.push({
+    username,
+    password:hash,
+    role:'user'
+  });
+
+  res.json({success:true});
+});
+
+// ===== ĐĂNG NHẬP =====
+app.post('/login', async (req,res)=>{
+  let {username,password} = req.body;
+
+  let user = users.find(u=>u.username===username);
+  if(!user) return res.json({error:'Sai tài khoản'});
+
+  let ok = await bcrypt.compare(password,user.password);
+  if(!ok) return res.json({error:'Sai mật khẩu'});
+
+  let token = jwt.sign({
+    username:user.username,
+    role:user.role
+  }, SECRET);
+
+  res.json({token});
+});
+
+// ===== CHECK TOKEN =====
+function auth(req,res,next){
+  let token = req.headers.authorization;
+  if(!token) return res.sendStatus(401);
+
+  try{
+    req.user = jwt.verify(token, SECRET);
+    next();
+  }catch{
+    res.sendStatus(403);
+  }
+}
+
+// ===== TẠO ĐƠN =====
+app.post('/create-order', auth, (req,res)=>{
+  let code = 'NKCSIREX' + String(qrCount++).padStart(4,'0');
+
+  let order = {
+    id:'DH'+Date.now(),
+    user:req.user.username,
+    amount:req.body.amount,
     code,
-    status: 'pending',
-    time: new Date()
+    status:'pending',
+    time:Date.now()
   };
 
   orders.push(order);
-
   res.json(order);
 });
 
-// ===== LẤY ĐƠN =====
-app.get('/orders/:user', (req, res) => {
-  const user = req.params.user;
-  const result = orders.filter(o => o.user === user);
-  res.json(result);
+// ===== ĐƠN USER =====
+app.get('/orders', auth, (req,res)=>{
+  res.json(orders.filter(o=>o.user===req.user.username));
+});
+
+// ===== ADMIN =====
+app.get('/admin/orders', auth, (req,res)=>{
+  if(req.user.role !== 'admin') return res.sendStatus(403);
+  res.json(orders);
 });
 
 // ===== DUYỆT =====
-app.post('/approve', (req, res) => {
-  const { id } = req.body;
-
-  let order = orders.find(o => o.id === id);
-  if (order) {
-    order.status = 'done';
-    return res.json({ success: true });
+app.post('/approve', auth, (req,res)=>{
+  let o = orders.find(x=>x.id===req.body.id);
+  if(o){
+    o.status='done';
+    return res.json({success:true});
   }
-
-  res.json({ success: false });
+  res.json({success:false});
 });
 
-// ===== AUTO CHECK =====
-app.post('/auto-check', (req, res) => {
-  const { code } = req.body;
+// ===== AUTO =====
+setInterval(()=>{
+  orders.forEach(o=>{
+    if(o.status==='pending' && Date.now()-o.time>10000){
+      o.status='done';
+    }
+  });
+},5000);
 
-  let order = orders.find(o => o.code === code);
-  if (order) {
-    order.status = 'done';
-    return res.json({ matched: true });
-  }
-
-  res.json({ matched: false });
-});
-
-// ===== START =====
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log('Server chạy tại port ' + PORT);
-});
+app.listen(3000,()=>console.log('Server chạy'));
